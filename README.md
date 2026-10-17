@@ -55,38 +55,94 @@ The system is organized into four core stages:
 
 | File | Purpose |
 | :--- | :--- |
-| [`synthetic_data_generator.py`](file:///synthetic_data_generator.py) | Generates synthetic time series using realistic load patterns, spikes, and AR(1) noise. |
-| [`data_collector.py`](file:///data_collector.py) | Samples live system telemetry (CPU, RAM, active processes, disk I/O) using `psutil`. |
-| [`feature_pipeline.py`](file:///feature_pipeline.py) | Constructs lag features, rolling windows, rates of change, and enforces chronological splits. |
-| [`model_trainer.py`](file:///model_trainer.py) | Trains ML algorithms, compares them to the persistence baseline, saves model, and plots diagnostic charts. |
-| [`predictor.py`](file:///predictor.py) | Inference engine for both arbitrary historical windows and live real-time OS metric forecasting. |
+| [`synthetic_data_generator.py`](./synthetic_data_generator.py) | Generates synthetic time series using realistic load patterns, spikes, and AR(1) noise. |
+| [`data_collector.py`](./data_collector.py) | Samples live system telemetry (CPU, RAM, active processes, disk I/O) using `psutil`. |
+| [`feature_pipeline.py`](./feature_pipeline.py) | Constructs lag features, rolling windows, rates of change, and chronological splits with a forecast-horizon gap. |
+| [`model_trainer.py`](./model_trainer.py) | Trains ML algorithms, compares them to the persistence baseline, saves the model, and plots diagnostic charts. |
+| [`predictor.py`](./predictor.py) | Provides the stable offline prediction function and optional live telemetry inference. |
+| [`forecast_config.py`](./forecast_config.py) | Defines the shared five-second sampling interval and five-minute (60-sample) forecast horizon. |
+| `ml/model.joblib` | Canonical trained model artifact used by `predict_workload`. |
 | `cpu_utilization_model.pkl` | Standalone Python pickle file containing the trained `RandomForestRegressor` for sharing. |
 | `cpu_utilization_model_bundle.pkl` | Complete Python pickle bundle (model, 26 feature names, evaluation metrics). |
-| [`test_pickle_load.py`](file:///test_pickle_load.py) | Ready-to-run script showing how recipient can load and use the `.pkl` files. |
+| [`test_pickle_load.py`](./test_pickle_load.py) | Ready-to-run script showing how to load and use the legacy `.pkl` files. |
 | `evaluation_results.png` | Comprehensive 4-panel diagnostic visualization comparing models, residuals, and feature importances. |
-| `best_cpu_predictor.joblib` | Serialized model artifact ready for production deployment. |
+| [`tests/test_predictor.py`](./tests/test_predictor.py) | Automated tests for the prediction interface, horizon, input validation, and artifacts. |
 
 ---
 
 ## 🚀 How to Run
 
-### 1. End-to-End Pipeline (Synthetic Data)
+### 1. Install Dependencies
+
+From this directory, create and activate a virtual environment, then install the application dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pip install pytest
+```
+
+The application dependencies are NumPy, pandas, scikit-learn, joblib, Matplotlib (training plots), and psutil (optional live telemetry). Offline prediction does not import psutil.
+
+### 2. Train the Five-Minute Model
+
+The synthetic generator produces one CPU sample every five seconds. The training target is therefore 60 samples (300 seconds) ahead. Training uses chronological 70%/15%/15% train/validation/test partitions, purges 60 rows at train and validation boundaries to avoid target overlap, and selects the model using validation RMSE. The test partition is reserved for final evaluation.
+
 ```bash
 python main.py --mode synthetic --samples 5000
 ```
 
-### 2. End-to-End Pipeline with Real Telemetry Capture
-Collects live metrics from your machine for 30 seconds before training and evaluating:
-```bash
-python main.py --mode real --collect-seconds 30
+This writes the canonical model to `ml/model.joblib` (relative to the project, regardless of the current working directory), plus the existing dataset, diagnostic plot, and legacy pickle artifacts.
+
+### 3. Public Prediction Interface
+
+Exact signature:
+
+```python
+predict_workload(history: Sequence[float]) -> float
 ```
 
-### 3. Real-Time Inference or Scenario Testing
-```bash
-python predictor.py
+Pass at least 11 recent CPU utilization readings, oldest first, sampled at five-second intervals. Each reading must be a finite numeric percentage in the inclusive range 0–100. The returned Python `float` is the predicted CPU utilization percentage five minutes after the latest reading. Since this interface accepts CPU history only, the model's other telemetry features default to memory usage `50%`, active processes `100`, and disk I/O `1 MB/s`.
+
+```python
+from predictor import predict_workload
+
+history = [28.0, 30.0, 32.0, 35.0, 38.0, 40.0, 42.0, 44.0, 45.0, 46.0, 48.0]
+prediction: float = predict_workload(history)
+print(f"CPU utilization in five minutes: {prediction:.2f}%")
 ```
 
-### 4. Direct Data Collection
+### 4. Prediction Smoke Test
+
+Run after training. This checks the public function and output type without requiring live telemetry:
+
+```bash
+python -c "from predictor import predict_workload; history = [28.0, 30.0, 32.0, 35.0, 38.0, 40.0, 42.0, 44.0, 45.0, 46.0, 48.0]; prediction = predict_workload(history); print(f'{prediction:.2f}% ({type(prediction).__name__})')"
+```
+
+### 5. Automated Tests
+
+```bash
+python -m pytest -q
+```
+
+### 6. Optional Real-Telemetry Training
+
+Collects real metrics at the same five-second sampling interval. Use a sufficiently long duration to provide training, validation, and test data for a five-minute horizon:
+
+```bash
+python main.py --mode real --collect-seconds 3600
+```
+
+### 7. Optional Live Inference Demo
+
+```bash
+python main.py --mode synthetic --samples 5000 --live-demo
+```
+
+### 8. Direct Data Collection
+
 ```bash
 python data_collector.py
 ```
@@ -104,7 +160,7 @@ Where:
 
 ### 2. Feature Engineering & Target
 $$X_t = [CPU_t, CPU_{t-1}, CPU_{t-2}, CPU_{t-3}, \text{MA}_3, \text{MA}_5, \sigma_3, \Delta CPU_t, \dots]$$
-$$y_t = CPU_{t+1}$$
+$$y_t = CPU_{t+60} \quad \text{(300 seconds at five-second sampling)}$$
 
 ### 3. Evaluation Metrics
 - **Mean Absolute Error (MAE):**

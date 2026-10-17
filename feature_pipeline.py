@@ -17,10 +17,12 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, List
 
+from forecast_config import PREDICTION_HORIZON_SAMPLES
+
 
 def engineer_features(
     df: pd.DataFrame,
-    target_horizon: int = 1,
+    target_horizon: int = PREDICTION_HORIZON_SAMPLES,
     cpu_col: str = "cpu_usage",
     dropna: bool = True
 ) -> Tuple[pd.DataFrame, List[str], str]:
@@ -29,13 +31,16 @@ def engineer_features(
 
     Parameters:
         df: Raw input DataFrame containing timestamps and metrics.
-        target_horizon: Prediction steps ahead (1 step = next interval).
+        target_horizon: Prediction steps ahead (60 steps = five minutes at five-second sampling).
         cpu_col: Name of the CPU utilization column.
         dropna: Whether to remove rows containing NaNs introduced by rolling/lags.
 
     Returns:
         (df_featured, feature_column_names, target_column_name)
     """
+    if target_horizon < 1:
+        raise ValueError("target_horizon must be at least one sample")
+
     data = df.copy()
 
     # Ensure timestamp is datetime if present
@@ -94,7 +99,8 @@ def chronological_train_val_test_split(
     feature_cols: List[str],
     target_col: str,
     train_ratio: float = 0.70,
-    val_ratio: float = 0.15
+    val_ratio: float = 0.15,
+    gap_steps: int = 0
 ):
     """
     Performs a strict chronological split (Time-Series Split) without shuffling
@@ -105,20 +111,29 @@ def chronological_train_val_test_split(
         - Validation: Middle [70% .. 85%]
         - Test: Final [85% .. 100%]
     """
+    if gap_steps < 0:
+        raise ValueError("gap_steps cannot be negative")
+
     n = len(df)
     train_end = int(n * train_ratio)
     val_end = int(n * (train_ratio + val_ratio))
+    train_stop = train_end - gap_steps
+    val_stop = val_end - gap_steps
+    if train_stop <= 0 or val_stop <= train_end or val_end >= n:
+        raise ValueError("Dataset is too small for the requested chronological split and gap")
 
     X = df[feature_cols]
     y = df[target_col]
 
-    X_train, y_train = X.iloc[:train_end], y.iloc[:train_end]
-    X_val, y_val = X.iloc[train_end:val_end], y.iloc[train_end:val_end]
+    X_train, y_train = X.iloc[:train_stop], y.iloc[:train_stop]
+    X_val, y_val = X.iloc[train_end:val_stop], y.iloc[train_end:val_stop]
     X_test, y_test = X.iloc[val_end:], y.iloc[val_end:]
 
     print(f"[i] Dataset Split Summary (Total rows: {n}):")
     print(f"    - Training Set:   {len(X_train)} samples ({train_ratio*100:.0f}%)")
     print(f"    - Validation Set: {len(X_val)} samples ({val_ratio*100:.0f}%)")
     print(f"    - Test Set:       {len(X_test)} samples ({(1.0 - train_ratio - val_ratio)*100:.0f}%)")
+    if gap_steps:
+        print(f"    - Purged boundary rows: {gap_steps} after training and validation")
 
     return X_train, y_train, X_val, y_val, X_test, y_test

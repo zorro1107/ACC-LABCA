@@ -22,6 +22,12 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from forecast_config import (
+    MODEL_PATH,
+    PREDICTION_HORIZON_SAMPLES,
+    PREDICTION_HORIZON_SECONDS,
+    SAMPLE_INTERVAL_SECONDS,
+)
 
 
 class NaiveBaselineModel:
@@ -66,7 +72,7 @@ def train_and_compare_models(
     X_val, y_val,
     X_test, y_test,
     feature_cols,
-    save_model_path="best_cpu_predictor.joblib",
+    save_model_path=MODEL_PATH,
     plot_output_path="evaluation_results.png"
 ):
     """
@@ -94,6 +100,7 @@ def train_and_compare_models(
     results = []
     trained_models = {}
     test_predictions = {}
+    validation_metrics = {}
 
     print("\n" + "=" * 70)
     print(" MODEL TRAINING AND EVALUATION PIPELINE ")
@@ -107,6 +114,7 @@ def train_and_compare_models(
         # Evaluate on Validation set
         val_preds = model.predict(X_val)
         val_metrics = evaluate_model(y_val, val_preds, name)
+        validation_metrics[name] = val_metrics
 
         # Evaluate on Test set (held-out final chronological period)
         test_preds = model.predict(X_test)
@@ -130,13 +138,14 @@ def train_and_compare_models(
     print("=" * 70)
     print(results_df.to_string(index=False))
 
-    # Identify best model based on lowest Test RMSE (excluding Naive Baseline for saving)
-    ml_results = results_df[results_df["Model"] != "Naive Persistence Baseline"]
-    best_row = ml_results.loc[ml_results["Test RMSE"].idxmin()]
-    best_model_name = best_row["Model"]
+    # Select using validation data only; the test set remains for final evaluation.
+    ml_model_names = [name for name in trained_models if name != "Naive Persistence Baseline"]
+    best_model_name = min(ml_model_names, key=lambda name: validation_metrics[name]["RMSE"])
+    best_row = results_df.loc[results_df["Model"] == best_model_name].iloc[0]
     best_model = trained_models[best_model_name]
 
     print(f"\n[+] Best Model Selected: {best_model_name}")
+    print(f"    - Validation RMSE: {validation_metrics[best_model_name]['RMSE']} %")
     print(f"    - Test MAE:  {best_row['Test MAE']} %")
     print(f"    - Test RMSE: {best_row['Test RMSE']} %")
     print(f"    - Test R2:   {best_row['Test R2']}")
@@ -147,7 +156,11 @@ def train_and_compare_models(
         "model_name": best_model_name,
         "feature_cols": feature_cols,
         "test_metrics": best_row.to_dict(),
+        "sampling_interval_seconds": SAMPLE_INTERVAL_SECONDS,
+        "prediction_horizon_seconds": PREDICTION_HORIZON_SECONDS,
+        "prediction_horizon_samples": PREDICTION_HORIZON_SAMPLES,
     }
+    os.makedirs(os.path.dirname(os.path.abspath(save_model_path)), exist_ok=True)
     joblib.dump(artifact, save_model_path)
     print(f"[+] Serialized model and metadata saved to: {save_model_path}")
 
