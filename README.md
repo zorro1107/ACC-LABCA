@@ -62,11 +62,13 @@ The system is organized into four core stages:
 | [`predictor.py`](./predictor.py) | Provides the stable offline prediction function and optional live telemetry inference. |
 | [`forecast_config.py`](./forecast_config.py) | Defines the shared five-second sampling interval and five-minute (60-sample) forecast horizon. |
 | `ml/model.joblib` | Canonical trained model artifact used by `predict_workload`. |
+| [`greenscale_scheduler.py`](./greenscale_scheduler.py) | Compares reactive, predictive, and GreenScale carbon-aware scheduling decisions using configurable simulation assumptions. |
 | `cpu_utilization_model.pkl` | Standalone Python pickle file containing the trained `RandomForestRegressor` for sharing. |
 | `cpu_utilization_model_bundle.pkl` | Complete Python pickle bundle (model, 26 feature names, evaluation metrics). |
 | [`test_pickle_load.py`](./test_pickle_load.py) | Ready-to-run script showing how to load and use the legacy `.pkl` files. |
 | `evaluation_results.png` | Comprehensive 4-panel diagnostic visualization comparing models, residuals, and feature importances. |
 | [`tests/test_predictor.py`](./tests/test_predictor.py) | Automated tests for the prediction interface, horizon, input validation, and artifacts. |
+| [`tests/test_greenscale_scheduler.py`](./tests/test_greenscale_scheduler.py) | Automated tests for scheduling constraints, prediction fallback, and estimated energy/emissions. |
 
 ---
 
@@ -127,7 +129,40 @@ python -c "from predictor import predict_workload; history = [28.0, 30.0, 32.0, 
 python -m pytest -q
 ```
 
-### 6. Optional Real-Telemetry Training
+### 6. GreenScale Decision Engine API
+
+`greenscale_scheduler.py` is a provider-independent simulation; it does not call Azure or scale replicas. Pass the same pending jobs, CPU history, time slots, and assumptions to `compare_strategies` to get comparable results for `reactive`, `predictive`, and `greenscale`. The result maps each strategy to decisions (including a reason for every scheduled or deferred job), the effective strategy used, and aggregate metrics suitable for UI display.
+
+Urgent jobs start immediately, even if they exceed configured CPU capacity. Flexible jobs are placed only in a configured start slot where estimated capacity is available and the job finishes by its deadline; GreenScale selects the feasible slot with the lowest configured carbon intensity, while reactive and predictive choose the earliest feasible slot. Prediction errors or out-of-range predictions switch predictive and GreenScale to reactive behavior and are reported in each result.
+
+```python
+from greenscale_scheduler import CarbonSlot, Job, SchedulerConfig, compare_strategies
+
+jobs = [
+    Job("urgent-api", cpu_cores=1, duration_minutes=10, kind="urgent"),
+    Job("nightly-report", cpu_cores=1, duration_minutes=20, kind="flexible", deadline_minutes=60),
+]
+history = [28.0, 30.0, 32.0, 35.0, 38.0, 40.0, 42.0, 44.0, 45.0, 46.0, 48.0]
+carbon_slots = [
+    CarbonSlot(start_minutes=0, carbon_intensity_gco2e_per_kwh=450),
+    CarbonSlot(start_minutes=30, carbon_intensity_gco2e_per_kwh=180),
+]
+results = compare_strategies(
+    jobs,
+    history,
+    carbon_slots,
+    SchedulerConfig(replicas=2, cpu_cores_per_replica=2, watts_per_cpu_core=50),
+)
+
+for strategy, result in results.items():
+    print(strategy, result.metrics)
+    for decision in result.decisions:
+        print(decision.job_id, decision.status, decision.reason)
+```
+
+`carbon_slots` are candidate job start times in minutes from now and must include minute zero. The selected slot's carbon intensity is assumed constant for that job's full duration, and the latest or predicted CPU percentage is held constant as background load across candidate slots. Energy estimates use `cpu_cores × watts_per_cpu_core × duration_hours`; emissions are `energy_kWh × carbon_intensity_gCO2e_per_kWh`. These are simulated assumptions and estimated job-only values—not Azure measurements, whole-cluster energy, or a guarantee of actual emissions savings. Returned frozen dataclasses can be serialized for UI integration (for example, with `dataclasses.asdict`).
+
+### 7. Optional Real-Telemetry Training
 
 Collects real metrics at the same five-second sampling interval. Use a sufficiently long duration to provide training, validation, and test data for a five-minute horizon:
 
@@ -135,13 +170,13 @@ Collects real metrics at the same five-second sampling interval. Use a sufficien
 python main.py --mode real --collect-seconds 3600
 ```
 
-### 7. Optional Live Inference Demo
+### 8. Optional Live Inference Demo
 
 ```bash
 python main.py --mode synthetic --samples 5000 --live-demo
 ```
 
-### 8. Direct Data Collection
+### 9. Direct Data Collection
 
 ```bash
 python data_collector.py
