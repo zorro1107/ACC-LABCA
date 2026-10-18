@@ -4,3 +4,5 @@ numpy
 pandas
 psutil
 scikit-learn
+streamlit
+plotly

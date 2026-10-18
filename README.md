@@ -85,7 +85,17 @@ python -m pip install -r requirements.txt
 python -m pip install pytest
 ```
 
-The application dependencies are NumPy, pandas, scikit-learn, joblib, Matplotlib (training plots), and psutil (optional live telemetry). Offline prediction does not import psutil.
+The application dependencies are NumPy, pandas, scikit-learn, joblib, Matplotlib (training plots), psutil (optional live telemetry), Streamlit, and Plotly. Offline prediction does not import psutil.
+
+### GreenScale Simulation Dashboard
+
+Run the Streamlit interface from the project root:
+
+```bash
+streamlit run app.py
+```
+
+The dashboard lets you edit five-second CPU history samples, workload jobs, infrastructure assumptions, and simulated carbon-intensity slots before comparing the real `greenscale_scheduler.py` policies. Flexible jobs need a deadline; carbon slots must include minute zero. If model prediction is unavailable, predictive and GreenScale results show the scheduler's reactive fallback. This is a simulation only: it does not control Azure or other cloud infrastructure, and energy and emissions are estimates for scheduled job CPU rather than measured cloud values.
 
 ### 2. Train the Five-Minute Model
 
